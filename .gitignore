@@ -1,0 +1,49 @@
+# Visual Studio папки
+.vs/
+*.suo
+*.user
+*.vcxproj.user
+*.db
+*.opendb
+
+# Папки сборки
+BrainAnalizer/bin/
+BrainAnalizer/obj/
+
+# NuGet-пакеты
+packages/
+*.nupkg
+project.lock.json
+project.assets.json
+
+# Конфигурационные файлы
+*.pdb
+*.log
+*.cache
+*.config
+
+# Резервные файлы
+*.bak
+*.tmp
+
+# Файлы, сгенерированные сборкой
+*.dll
+*.exe
+*.so
+*.dylib
+*.app
+
+# Rider / JetBrains
+.idea/
+*.iml
+
+# Тестовые результаты
+TestResults/
+*.trx
+*.coverage
+.coverage/
+
+# Файлы ОС
+.DS_Store
+Thumbs.db
+desktop.ini
