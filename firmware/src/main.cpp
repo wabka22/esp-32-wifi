@@ -6,7 +6,14 @@
 Preferences prefs;
 WiFiServer server(8888);
 
-void connectToWiFi(const char* ssid, const char* password);
+// Переменные для управления подключением
+unsigned long lastConnectionAttempt = 0;
+const unsigned long CONNECTION_RETRY_INTERVAL = 30000; // 30 секунд между попытками
+bool isConnecting = false;
+String savedSSID = "";
+String savedPass = "";
+
+void connectToWiFi();
 void printNetworkStatus(WiFiClient& client);
 
 void setup() {
@@ -14,8 +21,8 @@ void setup() {
   prefs.begin("wifi", false);
 
   // Считываем сохранённые данные Wi-Fi
-  String ssid = prefs.getString("ssid", "");
-  String pass = prefs.getString("pass", "");
+  savedSSID = prefs.getString("ssid", "");
+  savedPass = prefs.getString("pass", "");
 
   // Включаем оба режима: STA + AP
   WiFi.mode(WIFI_AP_STA);
@@ -24,8 +31,9 @@ void setup() {
   Serial.print("Access Point started. AP IP: ");
   Serial.println(WiFi.softAPIP());
 
-  if (ssid != "") {
-    connectToWiFi(ssid.c_str(), pass.c_str());
+  // Начинаем первую попытку подключения, если есть сохраненные данные
+  if (savedSSID != "") {
+    connectToWiFi();
   } else {
     Serial.println("No saved Wi-Fi credentials. Waiting for setup...");
   }
@@ -33,22 +41,40 @@ void setup() {
   server.begin();
 }
 
-void connectToWiFi(const char* ssid, const char* password) {
-  Serial.printf("Connecting to Wi-Fi: %s\n", ssid);
-  WiFi.begin(ssid, password);
-
-  unsigned long startAttemptTime = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
-    Serial.print(".");
-    delay(500);
+void connectToWiFi() {
+  if (savedSSID == "" || isConnecting) {
+    return;
   }
+  
+  Serial.printf("Attempting to connect to Wi-Fi: %s\n", savedSSID.c_str());
+  isConnecting = true;
+  
+  WiFi.begin(savedSSID.c_str(), savedPass.c_str());
+  lastConnectionAttempt = millis();
+}
 
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nConnected to Wi-Fi!");
-    Serial.print("Local IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    Serial.println("\nFailed to connect to Wi-Fi.");
+void handleWiFiReconnection() {
+  // Если не подключены и прошло достаточно времени с последней попытки
+  if (WiFi.status() != WL_CONNECTED && !isConnecting) {
+    if (millis() - lastConnectionAttempt >= CONNECTION_RETRY_INTERVAL) {
+      if (savedSSID != "") {
+        Serial.println("Reconnecting to Wi-Fi...");
+        connectToWiFi();
+      }
+    }
+  }
+  
+  // Проверяем статус текущего подключения
+  if (isConnecting) {
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n✅ Connected to Wi-Fi!");
+      Serial.print("Local IP: ");
+      Serial.println(WiFi.localIP());
+      isConnecting = false;
+    } else if (millis() - lastConnectionAttempt > 15000) { // 15 секунд таймаут
+      Serial.println("\n❌ Failed to connect to Wi-Fi. Will retry in 30 seconds.");
+      isConnecting = false;
+    }
   }
 }
 
@@ -58,15 +84,39 @@ void printNetworkStatus(WiFiClient& client) {
   client.print("AP IP: "); client.println(WiFi.softAPIP());
   client.print("Station connected: ");
   client.println(WiFi.status() == WL_CONNECTED ? "YES" : "NO");
+  
   if (WiFi.status() == WL_CONNECTED) {
     client.print("Wi-Fi SSID: "); client.println(WiFi.SSID());
     client.print("Wi-Fi IP: "); client.println(WiFi.localIP());
     client.print("Gateway: "); client.println(WiFi.gatewayIP());
+    client.print("RSSI: "); client.println(WiFi.RSSI());
+  } else {
+    client.print("Connection status: ");
+    switch (WiFi.status()) {
+      case WL_IDLE_STATUS: client.println("IDLE"); break;
+      case WL_NO_SSID_AVAIL: client.println("SSID not available"); break;
+      case WL_SCAN_COMPLETED: client.println("Scan completed"); break;
+      case WL_CONNECT_FAILED: client.println("Connect failed"); break;
+      case WL_CONNECTION_LOST: client.println("Connection lost"); break;
+      case WL_DISCONNECTED: client.println("Disconnected"); break;
+      default: client.println("Unknown"); break;
+    }
+    
+    if (savedSSID != "") {
+      client.print("Saved SSID: "); client.println(savedSSID);
+      client.print("Next retry in: "); 
+      client.print((CONNECTION_RETRY_INTERVAL - (millis() - lastConnectionAttempt)) / 1000);
+      client.println(" seconds");
+    }
   }
   client.println("=============================");
 }
 
 void loop() {
+  // Постоянно проверяем и переподключаемся к Wi-Fi
+  handleWiFiReconnection();
+  
+  // Обрабатываем клиентские подключения
   WiFiClient client = server.available();
   if (client) {
     Serial.println("Client connected.");
@@ -83,20 +133,43 @@ void loop() {
 
       if (ssid.length() > 0 && pass.length() > 0) {
         Serial.printf("Received credentials:\nSSID: %s\nPASS: %s\n", ssid.c_str(), pass.c_str());
+        
+        // Сохраняем новые учетные данные
         prefs.putString("ssid", ssid);
         prefs.putString("pass", pass);
+        savedSSID = ssid;
+        savedPass = pass;
+        
         client.println("Credentials saved. Connecting...");
-        connectToWiFi(ssid.c_str(), pass.c_str());
+        
+        // Немедленно начинаем попытку подключения
+        connectToWiFi();
+        
       } else {
         client.println("Invalid credentials format.");
       }
     } else if (command == "STATUS") {
       printNetworkStatus(client);
+    } else if (command == "FORCE_RECONNECT") {
+      client.println("Forcing reconnection...");
+      connectToWiFi();
     } else {
-      client.println("Unknown command. Use SET or STATUS.");
+      client.println("Unknown command. Use SET, STATUS or FORCE_RECONNECT.");
     }
 
     client.stop();
     Serial.println("Client disconnected.\n");
+  }
+
+  // Периодически выводим статус в Serial
+  static unsigned long lastStatusPrint = 0;
+  if (millis() - lastStatusPrint > 10000) { // Каждые 10 секунд
+    lastStatusPrint = millis();
+    
+    if (savedSSID != "" && WiFi.status() != WL_CONNECTED && !isConnecting) {
+      Serial.print("Wi-Fi disconnected. Next retry in: ");
+      Serial.print((CONNECTION_RETRY_INTERVAL - (millis() - lastConnectionAttempt)) / 1000);
+      Serial.println(" seconds");
+    }
   }
 }
