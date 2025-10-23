@@ -1,85 +1,102 @@
 #include <WiFi.h>
+#include <WiFiClient.h>
+#include <WiFiAP.h>
+#include <Preferences.h>
 
-const char* ssid     = "MTSRouter_28F9";
-const char* password = "66705895";
+Preferences prefs;
+WiFiServer server(8888);
 
-IPAddress serverIP(192, 168, 1, 169);
-const uint16_t serverPort = 8888;
-
-const int LED_PIN = 2;
-
-WiFiClient client;
+void connectToWiFi(const char* ssid, const char* password);
+void printNetworkStatus(WiFiClient& client);
 
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
-  
-  WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
+  prefs.begin("wifi", false);
+
+  // Считываем сохранённые данные Wi-Fi
+  String ssid = prefs.getString("ssid", "");
+  String pass = prefs.getString("pass", "");
+
+  // Включаем оба режима: STA + AP
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("karch_eeg_88005553535", "12345678"); // постоянная точка доступа ESP
+
+  Serial.print("Access Point started. AP IP: ");
+  Serial.println(WiFi.softAPIP());
+
+  if (ssid != "") {
+    connectToWiFi(ssid.c_str(), pass.c_str());
+  } else {
+    Serial.println("No saved Wi-Fi credentials. Waiting for setup...");
   }
-  
-  Serial.println("\nWiFi connected!");
-  Serial.print("ESP IP address: ");
-  Serial.println(WiFi.localIP());
+
+  server.begin();
 }
 
-void printNetworkInfo() {
-  Serial.println("=== Network Info ===");
-  Serial.print("ESP32 IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Server IP: ");
-  Serial.println(serverIP);
-  Serial.print("Gateway: ");
-  Serial.println(WiFi.gatewayIP());
-  Serial.print("Subnet: ");
-  Serial.println(WiFi.subnetMask());
-  Serial.println("====================");
+void connectToWiFi(const char* ssid, const char* password) {
+  Serial.printf("Connecting to Wi-Fi: %s\n", ssid);
+  WiFi.begin(ssid, password);
+
+  unsigned long startAttemptTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 15000) {
+    Serial.print(".");
+    delay(500);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected to Wi-Fi!");
+    Serial.print("Local IP: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("\nFailed to connect to Wi-Fi.");
+  }
+}
+
+void printNetworkStatus(WiFiClient& client) {
+  client.println("=== ESP32 Network Status ===");
+  client.print("AP SSID: "); client.println("karch_eeg_88005553535");
+  client.print("AP IP: "); client.println(WiFi.softAPIP());
+  client.print("Station connected: ");
+  client.println(WiFi.status() == WL_CONNECTED ? "YES" : "NO");
+  if (WiFi.status() == WL_CONNECTED) {
+    client.print("Wi-Fi SSID: "); client.println(WiFi.SSID());
+    client.print("Wi-Fi IP: "); client.println(WiFi.localIP());
+    client.print("Gateway: "); client.println(WiFi.gatewayIP());
+  }
+  client.println("=============================");
 }
 
 void loop() {
-  if (!client.connected()) {
-    Serial.println("Connecting to server...");
-    
-    if (client.connect(serverIP, serverPort)) {
-      Serial.println("Connected to server!");
+  WiFiClient client = server.available();
+  if (client) {
+    Serial.println("Client connected.");
+
+    String command = client.readStringUntil('\n');
+    command.trim();
+
+    if (command.startsWith("SET")) {
+      // Формат: SET\nSSID\nPASS\n
+      String ssid = client.readStringUntil('\n');
+      String pass = client.readStringUntil('\n');
+      ssid.trim();
+      pass.trim();
+
+      if (ssid.length() > 0 && pass.length() > 0) {
+        Serial.printf("Received credentials:\nSSID: %s\nPASS: %s\n", ssid.c_str(), pass.c_str());
+        prefs.putString("ssid", ssid);
+        prefs.putString("pass", pass);
+        client.println("Credentials saved. Connecting...");
+        connectToWiFi(ssid.c_str(), pass.c_str());
+      } else {
+        client.println("Invalid credentials format.");
+      }
+    } else if (command == "STATUS") {
+      printNetworkStatus(client);
     } else {
-      Serial.println("Connection failed!");
-      delay(2000);
-      return;
+      client.println("Unknown command. Use SET or STATUS.");
     }
+
+    client.stop();
+    Serial.println("Client disconnected.\n");
   }
-
-  String msg = "Toggle LED\n";
-  client.print(msg);
-  Serial.println("Sent: " + msg);
-
-  unsigned long timeout = millis();
-  while (client.available() == 0) {
-    if (millis() - timeout > 3000) {
-      Serial.println("Response timeout!");
-      client.stop();
-      return;
-    }
-    delay(100);
-  }
-
-  while (client.available()) {
-    String response = client.readStringUntil('\n');
-    Serial.println("Received: " + response);
-    
-    if (response.indexOf("ON") > 0) {
-      digitalWrite(LED_PIN, HIGH);
-      Serial.println("LED turned ON");
-    } else if (response.indexOf("OFF") > 0) {
-      digitalWrite(LED_PIN, LOW);
-      Serial.println("LED turned OFF");
-    }
-  }
-
-  delay(5000);
 }
